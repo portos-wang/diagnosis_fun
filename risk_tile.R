@@ -1,3 +1,42 @@
+#' 风险热图绘制函数
+#'
+#' 该函数用于根据输入的数据和分层变量生成风险热图，展示不同分层组合下的风险比例。
+#'
+#' @param data_risk 数据框，包含需要分析的风险数据。
+#' @param reference 字符向量，指定参考变量列名。
+#' @param tiers 字符向量，指定分层变量列名。
+#' @param tier_labels 字符向量，可选参数，指定分层变量的标签。如果未提供，则默认使用 `tiers` 的值。
+#' @param title 字符串，可选参数，指定热图的标题，默认为 "Risk plot"。
+#'
+#' @return 返回一个列表，包含以下内容：
+#' \itemize{
+#'   \item \code{strategy}: 分层策略的数据框。
+#'   \item \code{risk_df}: 风险数据框，包含计算后的风险比例。
+#'   \item \code{plot}: 生成的热图对象。
+#' }
+#'
+#' @details
+#' 该函数支持1到3个分层变量的分析，并根据分层变量的组合生成热图。热图使用颜色渐变表示风险比例，红色表示高风险，蓝色表示低风险。
+#'
+#' @examples
+#' \dontrun{
+#' # 示例用法
+#' result <- risk_tile(
+#'   data_risk = my_data,
+#'   reference = "outcome",
+#'   tiers = c("tier1", "tier2"),
+#'   tier_labels = c("Tier 1", "Tier 2"),
+#'   title = "My Risk Plot"
+#' )
+#' print(result$plot)
+#' }
+#'
+#' @importFrom tidyverse %>%
+#' @importFrom ggplot2 ggplot geom_tile scale_fill_distiller theme_minimal labs theme
+#' @importFrom scales percent
+#' @importFrom RColorBrewer brewer.pal
+#' @export
+
 risk_tile = function(
   data_risk = NULL,
   reference = NULL,
