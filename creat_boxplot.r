@@ -397,10 +397,12 @@ create_boxplot_multiple <- function(
       figure_list[[i]] <- p
     }
   }
-
-  patchwork::wrap_plots(
+  
+  patched_plots = patchwork::wrap_plots(
     figure_list,
     ncol = ncol
   ) &
     theme(axis.text.x = element_text(angle = angle, hjust = 1))
+  
+  return(list("figure_list" = figure_list, "patched_plots" = patched_plots))
 }
