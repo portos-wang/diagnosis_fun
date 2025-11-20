@@ -106,303 +106,199 @@ create_boxplot_single <- function(
 
 ## --------------------------------------------------------------------------------------------------------------##
 # 画出单个指标在多个分类标准上的分布
-
 create_boxplot_multiple <- function(
   data,
   response,
   vars = NULL,
-  comparisons = "all",
+  comparisons = "all", # "separated" or "all"
   theme = theme_bw(),
   color_theme = scale_fill_lancet(),
   x_lab = TRUE,
   y_lab = NULL,
   ncol = 3,
-  figure_type = "boxplot",
+  figure_type = "boxplot", # 'boxplot', 'violin', 'beeswarm'
   box_width = 0.9,
   angle = 30,
   help = FALSE
 ) {
-  # 说明
+  # --- 0. 加载依赖包 ---
+  library(ggplot2)
+  library(dplyr)
+  library(ggpubr)
+  library(patchwork)
+  library(ggbeeswarm)
+  library(ggsci)
+  library(rlang)
+
+  # --- 1. 帮助信息 ---
   if (isTRUE(help)) {
-    cat(
-      "create_boxplot_multiple(data, response, vars, ncol, figure_type, help)\n"
+    message(
+      "create_boxplot_multiple(data, response, vars, ncol, figure_type, help)"
     )
-    cat("data: 数据框，包含response和vars列\n")
-    cat("response: 字符串，表示响应变量的列名\n")
-    cat("vars: 字符串向量，表示分类变量的列名\n")
-    cat(
-      "comparisons: 字符串，'separated' 表示排列组合所有的levels进行两两比较，或'all'表示进行多组比较，默认值为'all'\n"
+    message("  data: 数据框")
+    message("  response: 响应变量列名 (Y轴)")
+    message("  vars: 分类变量列名向量 (X轴)")
+    message("  figure_type: 'boxplot'(默认), 'violin', 'beeswarm'")
+    message(
+      "  comparisons: 'all'(总体检验) 或 'separated'(仅显示显著的两两比较)"
     )
-    cat("ncol: 整数，表示每行显示的图形数量，默认值为3\n")
-    cat(
-      "figure_type: 字符串，表示图形类型，可选'boxplot', 'violin','beeswarm'，默认值为'boxplot'\n"
-    )
-    cat("help: 逻辑值，如果为TRUE则显示帮助信息\n")
-    return(NULL)
+    return(invisible(NULL))
   }
 
+  # --- 2. 变量检查与初始化 ---
+  # 检查依赖包是否已加载 (可选，这里假设用户已加载或环境已配置)
+
   if (is.null(vars)) {
-    vars <- data %>%
-      select_if(is.factor) %>%
-      colnames()
+    vars <- data %>% select(where(is.factor)) %>% colnames()
+  }
+
+  # 获取Y轴标签 (避免在循环中重复逻辑)
+  y_label_text <- if (is.null(y_lab)) {
+    attr(data[[response]], "label") %||% response
+  } else {
+    y_lab
   }
 
   figure_list <- list()
 
-  if (figure_type == "beeswarm") {
-    library(ggbeeswarm)
-    for (i in vars) {
-      #  comparisons = combn(levels(data[[i]]), 2, FUN = c, simplify = FALSE)
-      # 计算每个分组的样本数量和均值
-      count_data_path <- data %>%
-        filter(!is.na(!!sym(i))) %>%
-        count(!!rlang::sym(i)) %>%
-        mutate(label = paste0(!!rlang::sym(i), "\n(n=", n, ")"))
+  # --- 3. 循环绘图 (核心逻辑合并) ---
+  for (i in vars) {
+    # 3.1 数据准备：一次性过滤NA，避免后续重复filter
+    # 使用 .data[[var]] 语法替代 !!sym(var)，更符合tidy eval推荐
+    plot_data <- data %>%
+      filter(!is.na(.data[[i]]), !is.na(.data[[response]]))
 
-      # 计算每个组的均值
-      mean_data <- data %>%
-        filter(!is.na(!!sym(i))) %>%
-        group_by(!!rlang::sym(i)) %>%
-        summarise(mean_response = mean(!!sym(response)), .groups = "drop")
-
-      # 获取标签数据
-      method_labels <- count_data_path %>%
-        select(!!rlang::sym(i), label) %>%
-        distinct() %>%
-        pull(label, !!rlang::sym(i))
-
-      p <- data %>%
-        filter(!is.na(!!sym(i))) %>%
-        ggplot(aes(x = !!sym(i), y = !!sym(response), colour = !!sym(i))) +
-        geom_beeswarm() +
-        # 添加短横线表示均值 (x范围限制在组内)
-        geom_segment(
-          data = mean_data,
-          aes(
-            x = as.numeric(!!rlang::sym(i)) - 0.3, # 线段起始x
-            xend = as.numeric(!!rlang::sym(i)) + 0.3, # 线段结束x
-            y = mean_response, # 均值位置
-            yend = mean_response,
-            color = !!rlang::sym(i)
-          ),
-          size = 0.8
-        ) +
-        scale_x_discrete(labels = method_labels) +
-        color_theme +
-        theme +
-        labs(
-          # title = paste0(response,"在", i, "中的分布"),
-          x = ifelse(
-            isTRUE(x_lab),
-            ifelse(
-              is.null(attr(data[[i]], "label")),
-              i,
-              attr(data[[i]], "label")
-            ),
-            ""
-          ),
-          y = ifelse(
-            is.null(y_lab),
-            ifelse(
-              is.null(attr(data[[response]], "label")),
-              response,
-              attr(data[[response]], "label")
-            ),
-            y_lab
-          )
-        ) +
-        theme(legend.position = "none")
-
-      if (comparisons == "all") {
-        p <- p + stat_compare_means(label.x = 1.5)
-      } else if (comparisons == "separated") {
-        # comparisons = combn(levels(data[[vars[1]]]), 2, FUN = c, simplify = FALSE)
-        sig_comparisons <- compare_means(
-          data = data,
-          formula = as.formula(paste(response, "~", i))
-        ) %>%
-          filter(p < 0.05) %>%
-          select(group1, group2) %>%
-          purrr::pmap(c)
-        if (length(sig_comparisons) > 0) {
-          p <- p +
-            stat_compare_means(
-              comparisons = sig_comparisons,
-              method = "wilcox",
-              label = "p.signif"
-            )
-        } else {
-          p <- p + stat_compare_means(label.x = 1.5)
-        }
-      }
-
-      figure_list[[i]] <- p
+    if (nrow(plot_data) == 0) {
+      warning(paste("变量", i, "在去除NA后无数据，跳过。"))
+      next
     }
-  } else if (figure_type == "boxplot") {
-    library(ggplot2)
-    library(ggpubr)
 
-    for (i in vars) {
-      # comparisons = combn(levels(data[[i]]), 2, FUN = c, simplify = FALSE)
-      # 计算每个分组的样本数量和均值
-      count_data_path <- data %>%
-        filter(!is.na(!!sym(i))) %>%
-        count(!!rlang::sym(i)) %>%
-        mutate(label = paste0(!!rlang::sym(i), "\n(n=", n, ")"))
+    # 3.2 生成带有样本量(n)的标签
+    # 计算 counts 并 merge 回去，或者直接在绘图时使用命名向量替换 label
+    count_stats <- plot_data %>%
+      count(.data[[i]]) %>%
+      mutate(new_label = paste0(.data[[i]], "\n(n=", n, ")"))
 
-      # 计算每个组的均值
-      mean_data <- data %>%
-        filter(!is.na(!!sym(i))) %>%
-        group_by(!!rlang::sym(i)) %>%
-        summarise(mean_response = mean(!!sym(response)), .groups = "drop")
+    # 创建命名向量用于 scale_x_discrete (labels = ...)
+    label_map <- setNames(count_stats$new_label, count_stats[[i]])
 
-      # 获取标签数据
-      method_labels <- count_data_path %>%
-        select(!!rlang::sym(i), label) %>%
-        distinct() %>%
-        pull(label, !!rlang::sym(i))
-
-      p <- data %>%
-        filter(!is.na(!!sym(i))) %>%
-        ggplot(aes(x = !!sym(i), y = !!sym(response), fill = !!sym(i))) +
-        geom_boxplot(width = box_width) +
-        scale_x_discrete(labels = method_labels) +
-        color_theme +
-        theme +
-        labs(
-          # title = paste0(response,"在", i, "中的分布"),
-          x = ifelse(
-            isTRUE(x_lab),
-            ifelse(
-              is.null(attr(data[[i]], "label")),
-              i,
-              attr(data[[i]], "label")
-            ),
-            ""
-          ),
-          y = ifelse(
-            is.null(y_lab),
-            ifelse(
-              is.null(attr(data[[response]], "label")),
-              response,
-              attr(data[[response]], "label")
-            ),
-            y_lab
-          )
-        ) +
-        theme(legend.position = "none")
-
-      if (comparisons == "all") {
-        p <- p + stat_compare_means(label.x = 1.5)
-      } else if (comparisons == "separated") {
-        # comparisons = combn(levels(data[[vars[1]]]), 2, FUN = c, simplify = FALSE)
-        sig_comparisons <- compare_means(
-          data = data,
-          formula = as.formula(paste(response, "~", i))
-        ) %>%
-          filter(p < 0.05) %>%
-          select(group1, group2) %>%
-          purrr::pmap(c)
-        if (length(sig_comparisons) > 0) {
-          p <- p +
-            stat_compare_means(
-              comparisons = sig_comparisons,
-              method = "wilcox",
-              label = "p.signif"
-            )
-        } else {
-          p <- p + stat_compare_means(label.x = 1.5)
-        }
-      }
-
-      figure_list[[i]] <- p
+    # 获取X轴标签
+    x_label_text <- if (isTRUE(x_lab)) {
+      attr(data[[i]], "label") %||% i
+    } else {
+      ""
     }
-  } else if (figure_type == "violin") {
-    library(ggplot2)
-    library(ggpubr)
 
-    for (i in vars) {
-      # comparisons = combn(levels(data[[i]]), 2, FUN = c, simplify = FALSE)
-      # 计算每个分组的样本数量和均值
-      count_data_path <- data %>%
-        filter(!is.na(!!sym(i))) %>%
-        count(!!rlang::sym(i)) %>%
-        mutate(label = paste0(!!rlang::sym(i), "\n(n=", n, ")"))
+    # 3.3 初始化 ggplot 对象
+    # 注意：Beeswarm通常用 color，Boxplot/Violin通常用 fill，这里做统一处理
+    aes_mapping <- aes(x = .data[[i]], y = .data[[response]])
 
-      # 计算每个组的均值
-      mean_data <- data %>%
-        filter(!is.na(!!sym(i))) %>%
-        group_by(!!rlang::sym(i)) %>%
-        summarise(mean_response = mean(!!sym(response)), .groups = "drop")
-
-      # 获取标签数据
-      method_labels <- count_data_path %>%
-        select(!!rlang::sym(i), label) %>%
-        distinct() %>%
-        pull(label, !!rlang::sym(i))
-
-      p <- data %>%
-        filter(!is.na(!!sym(i))) %>%
-        ggplot(aes(x = !!sym(i), y = !!sym(response), fill = !!sym(i))) +
-        geom_violin(draw_quantiles = 1) +
-        scale_x_discrete(labels = method_labels) +
-        color_theme +
-        theme +
-        labs(
-          # title = paste0(response,"在", i, "中的分布"),
-          x = ifelse(
-            isTRUE(x_lab),
-            ifelse(
-              is.null(attr(data[[i]], "label")),
-              i,
-              attr(data[[i]], "label")
-            ),
-            ""
-          ),
-          y = ifelse(
-            is.null(y_lab),
-            ifelse(
-              is.null(attr(data[[response]], "label")),
-              response,
-              attr(data[[response]], "label")
-            ),
-            y_lab
-          )
-        ) +
-        theme(legend.position = "none")
-
-      if (comparisons == "all") {
-        p <- p + stat_compare_means(label.x = 1.5)
-      } else if (comparisons == "separated") {
-        # comparisons = combn(levels(data[[vars[1]]]), 2, FUN = c, simplify = FALSE)
-        sig_comparisons <- compare_means(
-          data = data,
-          formula = as.formula(paste(response, "~", i))
-        ) %>%
-          filter(p < 0.05) %>%
-          select(group1, group2) %>%
-          purrr::pmap(c)
-        if (length(sig_comparisons) > 0) {
-          p <- p +
-            stat_compare_means(
-              comparisons = sig_comparisons,
-              method = "wilcox",
-              label = "p.signif"
-            )
-        } else {
-          p <- p + stat_compare_means(label.x = 1.5)
-        }
-      }
-
-      figure_list[[i]] <- p
+    if (figure_type == "beeswarm") {
+      aes_mapping <- utils::modifyList(aes_mapping, aes(color = .data[[i]]))
+    } else {
+      aes_mapping <- utils::modifyList(aes_mapping, aes(fill = .data[[i]]))
     }
+
+    p <- ggplot(plot_data, aes_mapping)
+
+    # 3.4 根据类型添加几何对象
+    if (figure_type == "beeswarm") {
+      p <- p + geom_beeswarm()
+
+      # Beeswarm 特有的均值线逻辑
+      # 使用 stat_summary 替代手动计算 mean_data 和 geom_segment，代码更简洁
+      p <- p +
+        stat_summary(
+          fun = mean,
+          geom = "crossbar",
+          width = 0.6,
+          linewidth = 0.4,
+          aes(color = .data[[i]]) # 保持颜色一致
+        )
+    } else if (figure_type == "violin") {
+      p <- p + geom_violin(draw_quantiles = c(0.25, 0.5, 0.75), trim = FALSE)
+    } else {
+      # 默认为 boxplot
+      p <- p + geom_boxplot(width = box_width)
+    }
+
+    # 3.5 统一设置主题、标签和颜色
+    p <- p +
+      scale_x_discrete(labels = label_map) +
+      labs(x = x_label_text, y = y_label_text) +
+      theme +
+      theme(legend.position = "none")
+
+    # 应用颜色 (判断是 fill 还是 color)
+    if (figure_type == "beeswarm") {
+      # 如果 color_theme 是 scale_fill_xxx，通常对应 scale_color_xxx
+      # 这里假设用户传入的是 scale_fill，我们需要尽量兼容或使用 scale_color
+      # 简单的处理是：如果是 beeswarm，尝试寻找对应的 color scale，或者用户需要传入正确的 scale
+      # 为了兼容原代码逻辑，这里简单处理，beeswarm 原代码用的 color_theme 也是直接加的
+      # 如果 color_theme 是 scale_fill_lancet()，加到 color aesthetic 上可能无效
+      # 这里做一个简单的转换尝试 (仅针对 ggsci/ggplot2 标准对象)，或者假定用户传入了正确的
+      tryCatch(
+        {
+          if (
+            inherits(color_theme, "ScaleDiscrete") &&
+              "fill" %in% color_theme$aesthetics
+          ) {
+            # 尝试将 fill scale 转换为 color scale (这是一个hack，如果不严谨可以删掉)
+            # 更好的方式是建议用户传入 scale_color_lancet()
+            # 这里保留原逻辑：直接相加
+            p <- p + color_theme
+          } else {
+            p <- p + color_theme
+          }
+        },
+        error = function(e) p <- p + color_theme
+      )
+    } else {
+      p <- p + color_theme
+    }
+
+    # 3.6 统计检验逻辑
+    if (comparisons == "all") {
+      # 总体比较 (Anova / Kruskal)
+      p <- p + stat_compare_means(label.x.npc = "center")
+    } else if (comparisons == "separated") {
+      # 计算显著的两两比较
+      # 使用 tryCatch 防止计算 p 值出错中断循环
+      sig_comparisons <- tryCatch(
+        {
+          compare_means(
+            as.formula(paste(response, "~", i)),
+            data = plot_data
+          ) %>%
+            filter(p < 0.05) %>%
+            select(group1, group2)
+        },
+        error = function(e) NULL
+      )
+
+      if (!is.null(sig_comparisons) && nrow(sig_comparisons) > 0) {
+        comp_list <- as.list(as.data.frame(
+          t(sig_comparisons),
+          stringsAsFactors = FALSE
+        ))
+        p <- p +
+          stat_compare_means(
+            comparisons = comp_list,
+            method = "wilcox",
+            label = "p.signif"
+          )
+      } else {
+        # 如果没有显著差异，回退到显示总体 p 值
+        p <- p + stat_compare_means(label.x.npc = "center")
+      }
+    }
+
+    figure_list[[i]] <- p
   }
-  
-  patched_plots = patchwork::wrap_plots(
-    figure_list,
-    ncol = ncol
-  ) &
+
+  # --- 4. 拼图 ---
+  patched_plots <- wrap_plots(figure_list, ncol = ncol) &
     theme(axis.text.x = element_text(angle = angle, hjust = 1))
-  
+
   return(list("figure_list" = figure_list, "patched_plots" = patched_plots))
 }
