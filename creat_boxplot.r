@@ -106,6 +106,7 @@ create_boxplot_single <- function(
 
 ## --------------------------------------------------------------------------------------------------------------##
 # 画出单个指标在多个分类标准上的分布
+
 create_boxplot_multiple <- function(
   data,
   response,
@@ -260,7 +261,7 @@ create_boxplot_multiple <- function(
     # 3.6 统计检验逻辑
     if (comparisons == "all") {
       # 总体比较 (Anova / Kruskal)
-      p <- p + stat_compare_means(label.x.npc = "center")
+      p <- p + stat_compare_means(label.x = 1.5)
     } else if (comparisons == "separated") {
       # 计算显著的两两比较
       # 使用 tryCatch 防止计算 p 值出错中断循环
@@ -289,7 +290,7 @@ create_boxplot_multiple <- function(
           )
       } else {
         # 如果没有显著差异，回退到显示总体 p 值
-        p <- p + stat_compare_means(label.x.npc = "center")
+        p <- p + stat_compare_means(label.x = 1.5)
       }
     }
 
