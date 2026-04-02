@@ -52,7 +52,7 @@ risk_tile = function(
   title = "Risk plot",
   show_n = TRUE,
   show_ci = TRUE,
-  ci_newline = TRUE,
+  ci_newline = FALSE,
   digits = 2
 ) {
   require(tidyverse)
