@@ -9,15 +9,24 @@ map_roc <- function(
     color = "Diagnosis",
     legend_labels = NULL,
     title = "ROC Curve",
+    extra_metrics = c(),
     help = FALSE) {
-  # 1. 必要的包 -------------------------------------------------------------------------------------
+  # 1. 参数校验 -------------------------------------------------------------------------------------
+
+  valid_metrics <- c("npv", "ppv", "accuracy", "plr", "nlr")
+  if (!all(extra_metrics %in% valid_metrics)) {
+    invalid <- setdiff(extra_metrics, valid_metrics)
+    stop("extra_metrics 包含无效值: ", paste(invalid, collapse = ", "),
+         "\n可选值: ", paste(valid_metrics, collapse = ", "))
+  }
+
+  # 2. 必要的包 -------------------------------------------------------------------------------------
+
+  if (!requireNamespace("pROC", quietly = TRUE)) stop("请安装 pROC 包")
+  if (!requireNamespace("ggplot2", quietly = TRUE)) stop("请安装 ggplot2 包")
 
 
-  library(pROC)
-  library(tidyverse)
-
-
-  # 2. 帮助说明 -------------------------------------------------------------------------------------
+  # 3. 帮助说明 -------------------------------------------------------------------------------------
 
 
   if (isTRUE(help)) {
@@ -35,102 +44,193 @@ map_roc <- function(
       "best_method: 计算灵敏特异度所用的方案, 可以是 (youden) 或 (c), 默认为 (c)\n",
       'best_policy: 当出现多个 best 的 threshold, 如何确定用哪一个。取值 "stop", "omit", "random", 默认为 "random" \n',
       "help: 当为 TRUE, 显示这一堆说明。\n",
-      "plot: 默认为 TRUE, 决定是否要画个 ROC 图.\n",
-      "color: 如果要画图, legend 的标题是什么, 默认为 Diagnosis.\n",
-      "title: 如果要画图, title 是什么, 某认为 ROC Curve\n"
+      "plot: 默认为 TRUE, 决定是否要画个 ROC 图。\n",
+      "color: 如果要画图, legend 的标题是什么, 默认为 Diagnosis。\n",
+      "title: 如果要画图, title 是什么, 默认为 ROC Curve。\n",
+      "extra_metrics: 字符向量，指定要额外输出的指标，可选值: 'npv', 'ppv', 'accuracy', 'plr', 'nlr'。\n",
+      "              可任意组合，如 c('npv', 'ppv', 'accuracy')。默认为 c() 即不输出额外指标。\n",
+      "\n",
+      "auc_ci_se_sp 表格默认包含: Methods, AUC (95% CI), Threshold, Specificity (95% CI), Sensitivity (95% CI), Label\n",
+      "可选列: NPV, PPV, Accuracy, Positive Likelihood Ratio, Negative Likelihood Ratio (均含 95% CI)\n"
     )
     return("==========================================================================================\n")
   }
 
 
-  # 3. 功能区 --------------------------------------------------------------------------------------
+  # 4. 功能区 --------------------------------------------------------------------------------------
 
   ## 定义一个空列表用于接收 roc_list
 
-  roc_list <- c()
-
-
-  ## for 循环，遍历需要进行 roc test 的变量，并以 reponse 参数为 response。
-  ## 没计算完毕，都将本次计算的 roc 对象存入 roc_list
-
-  for (i in vars_to_calc_roc) {
-    temp_roc <- roc(data_roc[, response], data_roc[, i], auc = T, ci = T)
-    # print(temp_roc)
-    roc_list[[i]] <- temp_roc
-  }
+  roc_list <- purrr::set_names(
+    purrr::map(vars_to_calc_roc, ~ pROC::roc(data_roc[, response], data_roc[, .x], auc = TRUE, ci = TRUE)),
+    vars_to_calc_roc
+  )
 
   ## 得到 roc_list 后，批量计算每个 roc 对象对应的灵敏特异性和AUC
 
-  se_sp <- roc_list |>
-    map_df(
-      ~ ci.coords(
-        .x,
-        x = "best",
-        best.method = best_method,
-        best.policy = best_policy,
-        input = "threshold",
-        ret = c("threshold", "specificity", "sensitivity", "npv", "ppv")
+  # 动态构建 ci.coords 的 ret 参数
+  best_opts <- list(best.method = best_method, best.policy = best_policy)
+
+  base_ret <- c("threshold", "specificity", "sensitivity")
+  if ("npv" %in% extra_metrics) base_ret <- c(base_ret, "npv")
+  if ("ppv" %in% extra_metrics) base_ret <- c(base_ret, "ppv")
+
+  ci_result <- purrr::map_df(
+    roc_list,
+    ~ do.call(pROC::ci.coords, c(list(.x, x = "best", input = "threshold", ret = base_ret), best_opts))
+  )
+
+  # 构建基础结果列（始终输出）
+  result_df <- data.frame(
+    Threshold = ci_result$threshold[, 2],
+    `Specificity (95% CI)` = sprintf(
+      "%.3f (%.3f, %.3f)",
+      ci_result$specificity[, 2],
+      ci_result$specificity[, 1],
+      ci_result$specificity[, 3]
+    ),
+    `Sensitivity (95% CI)` = sprintf(
+      "%.3f (%.3f, %.3f)",
+      ci_result$sensitivity[, 2],
+      ci_result$sensitivity[, 1],
+      ci_result$sensitivity[, 3]
+    ),
+    check.names = FALSE
+  )
+
+  # 可选列：NPV
+  if ("npv" %in% extra_metrics) {
+    result_df[["Negative Predictive Value (95% CI)"]] <- sprintf(
+      "%.3f (%.3f, %.3f)",
+      ci_result$npv[, 2],
+      ci_result$npv[, 1],
+      ci_result$npv[, 3]
+    )
+  }
+
+  # 可选列：PPV
+  if ("ppv" %in% extra_metrics) {
+    result_df[["Positive Predictive Value (95% CI)"]] <- sprintf(
+      "%.3f (%.3f, %.3f)",
+      ci_result$ppv[, 2],
+      ci_result$ppv[, 1],
+      ci_result$ppv[, 3]
+    )
+  }
+
+  # 可选列：Accuracy, PLR, NLR（从混淆矩阵计算）
+  if ("accuracy" %in% extra_metrics || "plr" %in% extra_metrics || "nlr" %in% extra_metrics) {
+    extra_metrics_df <- purrr::map_dfr(roc_list, function(roc_obj) {
+      co <- as.data.frame(
+        do.call(pROC::coords, c(list(roc_obj, x = "best", ret = c("tp", "tn", "fp", "fn")), best_opts))
       )
-    ) %>%
-    mutate(
-      "Threshold" = threshold[, 2],
-      "Specificity (95% CI)" = sprintf("%.3f (%.3f, %.3f)", specificity[, 2], specificity[, 1], specificity[, 3]),
-      "Sensitivity (95% CI)" = sprintf("%.3f (%.3f, %.3f)", sensitivity[, 2], sensitivity[, 1], sensitivity[, 3]),
-      "Negative Predictive Value (95% CI)" = sprintf("%.3f (%.3f, %.3f)", npv[, 2], npv[, 1], npv[, 3]),
-      "Positive Predictive Value (95% CI)" = sprintf("%.3f (%.3f, %.3f)", ppv[, 2], ppv[, 1], ppv[, 3])
-    ) %>%
-    select(c("Threshold", "Specificity (95% CI)", "Sensitivity (95% CI)", "Negative Predictive Value (95% CI)", "Positive Predictive Value (95% CI)"))
+      tp <- co[["tp"]][1]
+      tn <- co[["tn"]][1]
+      fp <- co[["fp"]][1]
+      fn <- co[["fn"]][1]
+      n_pos <- tp + fn
+      n_neg <- tn + fp
+      n_total <- n_pos + n_neg
+      se <- tp / n_pos
+      sp <- tn / n_neg
 
+      row <- list()
 
-  auc_ci <- roc_list |>
-    map_df(~ ci(.x)) |>
+      if ("accuracy" %in% extra_metrics) {
+        acc <- (tp + tn) / n_total
+        acc_ci <- binom.test(tp + tn, n_total)$conf.int
+        row[["Accuracy (95% CI)"]] <- sprintf(
+          "%.3f (%.3f, %.3f)",
+          acc, acc_ci[1], acc_ci[2]
+        )
+      }
+
+      if ("plr" %in% extra_metrics) {
+        plr <- se / (1 - sp)
+        if (tp > 0 && fp > 0 && sp < 1) {
+          var_log_plr <- 1 / tp - 1 / n_pos + 1 / fp - 1 / n_neg
+          plr_ci <- exp(
+            log(plr) + c(-1, 1) * qnorm(0.975) * sqrt(max(0, var_log_plr))
+          )
+        } else {
+          plr_ci <- c(NA_real_, NA_real_)
+        }
+        row[["Positive Likelihood Ratio (95% CI)"]] <- sprintf(
+          "%.3f (%.3f, %.3f)",
+          plr, plr_ci[1], plr_ci[2]
+        )
+      }
+
+      if ("nlr" %in% extra_metrics) {
+        nlr <- (1 - se) / sp
+        if (fn > 0 && tn > 0 && se < 1) {
+          var_log_nlr <- 1 / fn - 1 / n_pos + 1 / tn - 1 / n_neg
+          nlr_ci <- exp(
+            log(nlr) + c(-1, 1) * qnorm(0.975) * sqrt(max(0, var_log_nlr))
+          )
+        } else {
+          nlr_ci <- c(NA_real_, NA_real_)
+        }
+        row[["Negative Likelihood Ratio (95% CI)"]] <- sprintf(
+          "%.3f (%.3f, %.3f)",
+          nlr, nlr_ci[1], nlr_ci[2]
+        )
+      }
+
+      tibble::as_tibble(row)
+    })
+
+    result_df <- cbind(result_df, extra_metrics_df)
+  }
+
+  ## AUC CI
+  auc_ci <- purrr::map_df(roc_list, ~ pROC::ci(.x)) |>
     t() |>
     as.data.frame() |>
     round(3) |>
-    mutate(
+    dplyr::mutate(
       "AUC (95% CI)" = paste0(V2, " (", V1, ", ", V3, ")")
     ) |>
-    select(dplyr::last_col())
+    dplyr::select(dplyr::last_col())
 
-  auc_ci_se_sp <- cbind(auc_ci, se_sp) |>
-    rownames_to_column() |>
-    mutate(
-      Threshold = if_else(Threshold != 0.5, Threshold, NA)
+  ## 合并最终结果
+  auc_ci_se_sp <- cbind(auc_ci, result_df) |>
+    tibble::rownames_to_column(var = "Methods") |>
+    dplyr::mutate(
+      Threshold = dplyr::if_else(abs(Threshold - 0.5) > 1e-10, Threshold, NA_real_)
     )
 
-  auc_ci_se_sp$Group <- rep(label, length(vars_to_calc_roc))
-  colnames(auc_ci_se_sp) <- c("Methods", "AUC (95% CI)", "Threshold", "Specificity (95% CI)", "Sensitivity (95% CI)", "Negative Predictive Value (95% CI)", "Positive Predictive Value (95% CI)", "Label")
+  auc_ci_se_sp$Label <- rep(label, length(vars_to_calc_roc))
 
-  ## 画出 ROC 曲线图
   if (isTRUE(plot)) {
-    p_roc <- ggroc(roc_list, linewidth = 0.9, legacy.axes = TRUE) +
-      labs(
+    p_roc <- pROC::ggroc(roc_list, linewidth = 0.9, legacy.axes = TRUE) +
+      ggplot2::labs(
         x = "1 - Specificity",
         y = "Sensitivity",
         color = color,
         title = title
       ) +
-      theme_minimal() +
-      geom_abline(slope = 1, linetype = "dashed") +
-      scale_x_continuous(labels = scales::percent_format(accuracy = 1L)) +
-      scale_y_continuous(labels = scales::percent_format(accuracy = 1L)) +
+      ggplot2::theme_minimal() +
+      ggplot2::geom_abline(slope = 1, linetype = "dashed") +
+      ggplot2::scale_x_continuous(labels = scales::percent_format(accuracy = 1L)) +
+      ggplot2::scale_y_continuous(labels = scales::percent_format(accuracy = 1L)) +
       ggsci::scale_color_lancet(labels = if (is.null(legend_labels)) vars_to_calc_roc else legend_labels) +
-      theme(
+      ggplot2::theme(
         plot.title.position = "panel",
-        plot.title = element_text(face = "bold"),
+        plot.title = ggplot2::element_text(face = "bold"),
         legend.position = "inside",
         legend.position.inside = c(0.75, 0.3),
-        legend.title = element_text(face = "bold"),
-        legend.text = element_text(face = "bold"),
-        axis.title = element_text(face = "bold")
+        legend.title = ggplot2::element_text(face = "bold"),
+        legend.text = ggplot2::element_text(face = "bold"),
+        axis.title = ggplot2::element_text(face = "bold")
       )
   } else {
-    p_roc <- c()
+    p_roc <- NULL
   }
 
 
 
-  # 4. 返回区 --------------------------------------------------------------------------------------
+  # 5. 返回区 --------------------------------------------------------------------------------------
 
 
   returns <- list()
